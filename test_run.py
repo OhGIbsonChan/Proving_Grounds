@@ -15,7 +15,7 @@ bt = Backtest(
     df, 
     TenAMStrategy, 
     cash=config.INITIAL_CASH, 
-    commission=config.COMMISSION, 
+    commission=config.TOTAL_FRICTION, 
     margin=config.LEVERAGE
     trade_on_close=False # Forces entry on the NEXT candle's open
 )

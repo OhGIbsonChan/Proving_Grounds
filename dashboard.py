@@ -128,11 +128,39 @@ STRAT_MAP = get_strategies()
 selected_strat_name = st.sidebar.selectbox("Select Strategy", list(STRAT_MAP.keys()))
 SelectedStrategy = STRAT_MAP[selected_strat_name]
 
+# Load data once to get the global date range
+@st.cache_data
+def get_data_bounds():
+    df = load_data(config.DATA_PATH, timeframe="1h") # Use 1h for speed just to get dates
+    return df.index.min(), df.index.max()
+
+min_data_date, max_data_date = get_data_bounds()
+
+# --- SIDEBAR UPDATES ---
+st.sidebar.header("⏱️ Timeframe & Data Split")
+selected_tf = st.sidebar.selectbox("Select Timeframe", ["1min", "5min", "15min", "1h"], index=0)
 initial_cash = st.sidebar.number_input("Starting Cash ($)", value=100000)
 leverage = st.sidebar.slider("Leverage", 1, 50, 20)
 comm = st.sidebar.number_input("Comm ($)", value=1.25) / 30000 
 # NEW: Slippage Input (as a percentage of price)
 slippage_pct = st.sidebar.number_input("Slippage (%)", value=0.01, step=0.01) / 100
+total_friction = comm + slippage_pct
+
+# Dynamic Date Range for OSS
+# We use the min/max from the actual data file here
+col_start, col_end = st.sidebar.columns(2)
+start_date = col_start.date_input(
+    "Start Date", 
+    value=min_data_date.date(),
+    min_value=min_data_date.date(),
+    max_value=max_data_date.date()
+)
+end_date = col_end.date_input(
+    "End Date", 
+    value=max_data_date.date(),
+    min_value=min_data_date.date(),
+    max_value=max_data_date.date()
+)
 
 params = {}
 if hasattr(SelectedStrategy, 'risk_reward'): params["risk_reward"] = st.sidebar.number_input("Risk/Reward", value=float(SelectedStrategy.risk_reward))
@@ -142,75 +170,143 @@ if hasattr(SelectedStrategy, 'swing_lookback'): params["swing_lookback"] = st.si
 if st.button("🚀 Run Backtest"):
     with st.spinner("Crunching..."):
         try:
-            timeframe = "1min" if "ICT" in selected_strat_name or "Golden" in selected_strat_name else "5min"
-            df = load_data(config.DATA_PATH, timeframe=timeframe)
+            # 1. Load data
+            df = load_data(config.DATA_PATH, timeframe=selected_tf)
+
+            # 2. Fix Timezone Mismatch for Slicing
+            # Convert date objects to localized timestamps to match df.index
+            tz = "America/New_York"
+            start_ts = pd.Timestamp(start_date).tz_localize(tz)
+            end_ts = pd.Timestamp(end_date).tz_localize(tz).replace(hour=23, minute=59, second=59)
             
-            bt = Backtest(df, SelectedStrategy, cash=initial_cash, commission=comm, margin=1/leverage, trade_on_close=False)
-            stats = bt.run(**params)
+            df = df.loc[start_ts:end_ts]
             
-            # --- Generate Assets ---
-            grade, color = calculate_grade(stats)
-            equity_curve = stats['_equity_curve']['Equity']
-            
-            # Downsample for PNG generation (speed up)
-            if len(equity_curve) > 2000:
-                equity_curve_img_data = equity_curve.iloc[::len(equity_curve)//2000]
+            if df.empty:
+                st.error("No data available for the selected date range.")
             else:
-                equity_curve_img_data = equity_curve
+                # 3. Initialize and RUN inside the 'else' block
+                bt = Backtest(
+                    df, 
+                    SelectedStrategy, 
+                    cash=initial_cash, 
+                    commission=total_friction, 
+                    margin=1/leverage, 
+                    trade_on_close=False
+                )
                 
-            img_b64 = get_equity_curve_image(equity_curve_img_data)
-            report_html = create_mobile_report(stats, selected_strat_name, grade, color, img_b64)
+                stats = bt.run(**params)
             
-            # --- Display ---
-            st.markdown(f"<h2 style='color:{color}'>Grade: {grade}</h2>", unsafe_allow_html=True)
-            
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Return", f"{stats['Return [%]']:.2f}%")
-            col2.metric("Profit Factor", f"{stats['Profit Factor']:.2f}")
-            col3.metric("Sortino", f"{stats['Sortino Ratio']:.2f}")
-            col4.metric("Kelly", f"{stats['Kelly Criterion']:.2f}")
-            
-            b64 = base64.b64encode(report_html.encode()).decode()
-            href = f'<a href="data:text/html;base64,{b64}" download="report_mobile.html"><button style="background:#ff4b4b;color:white;padding:10px;border:none;border-radius:5px;cursor:pointer;">📱 Download Mobile Report</button></a>'
-            st.markdown(href, unsafe_allow_html=True)
-
-            # --- 5. DESKTOP DETAILED VIEW ---
-            st.markdown("---")
-            st.subheader("🖥️ Desktop Dashboard")
-
-            # A. Interactive Equity Curve (Downsampled for Speed)
-            st.caption("Equity Curve (Interactive)")
-            equity_curve = stats['_equity_curve']['Equity']
-            
-            # Downsample: If > 5000 points, show every Nth point to prevent crashing
-            if len(equity_curve) > 5000: 
-                downsample_rate = len(equity_curve) // 5000
-                st.line_chart(equity_curve.iloc[::downsample_rate])
-            else:
-                st.line_chart(equity_curve)
-
-            # B. Full Statistics Table (Sanitized)
-            # We convert to string to prevent the "PyArrow/Streamlit" error
-            clean_stats = stats.drop(['_equity_curve', '_trades', '_strategy'], errors='ignore')
-            clean_stats_df = clean_stats.to_frame(name="Value").astype(str)
-
-            with st.expander("📊 View Full Statistics", expanded=True):
-                st.dataframe(clean_stats_df, use_container_width=True)
-
-            # C. Trade Log (Sanitized & Limited)
-            trades = stats['_trades'].copy()
-            
-            # Fix Duration formatting
-            if 'Duration' in trades.columns:
-                trades['Duration'] = trades['Duration'].astype(str)
-            
-            # Limit to last 2000 trades to prevent "Out of Memory"
-            if len(trades) > 2000:
-                st.warning(f"⚠️ Showing last 2,000 trades (Total: {len(trades)}) to save memory.")
-                trades = trades.iloc[-2000:]
+                # --- Generate Assets ---
+                grade, color = calculate_grade(stats)
+                equity_curve = stats['_equity_curve']['Equity']
                 
-            with st.expander("📝 View Trade Log"):
-                st.dataframe(trades.astype(str), use_container_width=True)
+                # Downsample for PNG generation (speed up)
+                if len(equity_curve) > 2000:
+                    equity_curve_img_data = equity_curve.iloc[::len(equity_curve)//2000]
+                else:
+                    equity_curve_img_data = equity_curve
+                    
+                img_b64 = get_equity_curve_image(equity_curve_img_data)
+                report_html = create_mobile_report(stats, selected_strat_name, grade, color, img_b64)
+                
+                # --- Display ---
+                st.markdown(f"<h2 style='color:{color}'>Grade: {grade}</h2>", unsafe_allow_html=True)
+                
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Return", f"{stats['Return [%]']:.2f}%")
+                col2.metric("Profit Factor", f"{stats['Profit Factor']:.2f}")
+                col3.metric("Sortino", f"{stats['Sortino Ratio']:.2f}")
+                col4.metric("Kelly", f"{stats['Kelly Criterion']:.2f}")
+                
+                b64 = base64.b64encode(report_html.encode()).decode()
+                href = f'<a href="data:text/html;base64,{b64}" download="report_mobile.html"><button style="background:#ff4b4b;color:white;padding:10px;border:none;border-radius:5px;cursor:pointer;">📱 Download Mobile Report</button></a>'
+                st.markdown(href, unsafe_allow_html=True)
+
+                # --- 5. DESKTOP DETAILED VIEW ---
+                st.markdown("---")
+                st.subheader("🖥️ Desktop Dashboard")
+
+                # A. Interactive Equity Curve (Downsampled for Speed)
+                st.caption("Equity Curve (Interactive)")
+                equity_curve = stats['_equity_curve']['Equity']
+                
+                # Downsample: If > 5000 points, show every Nth point to prevent crashing
+                if len(equity_curve) > 5000: 
+                    downsample_rate = len(equity_curve) // 5000
+                    st.line_chart(equity_curve.iloc[::downsample_rate])
+                else:
+                    st.line_chart(equity_curve)
+
+                # B. Full Statistics Table (Sanitized)
+                # We convert to string to prevent the "PyArrow/Streamlit" error
+                clean_stats = stats.drop(['_equity_curve', '_trades', '_strategy'], errors='ignore')
+                clean_stats_df = clean_stats.to_frame(name="Value").astype(str)
+
+                with st.expander("📊 View Full Statistics", expanded=True):
+                    st.dataframe(clean_stats_df, use_container_width=True)
+
+                # --- NEW: MONTE CARLO SIMULATION SECTION ---
+                st.markdown("---")
+                st.subheader("🎲 Monte Carlo Risk Analysis")
+
+                # Sidebar settings for Monte Carlo
+                n_simulations = st.sidebar.slider("MC Iterations", 100, 1000, 500)
+                sample_size = len(stats['_trades'])
+
+                if sample_size > 10:
+                    trades_pnl = stats['_trades']['PnL'].values
+                    
+                    # Run Simulations
+                    mc_results = []
+                    for _ in range(n_simulations):
+                        # Shuffle the trades with replacement
+                        sim_trades = np.random.choice(trades_pnl, size=sample_size, replace=True)
+                        # Calculate equity curve for this simulation
+                        sim_equity = np.cumsum(sim_trades) + initial_cash
+                        mc_results.append(sim_equity)
+                    
+                    # Plotting
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    for run in mc_results[:100]: # Plot first 100 paths for clarity
+                        ax.plot(run, color='gray', alpha=0.1, linewidth=0.5)
+                    
+                    # Highlight the 5th and 95th percentile paths
+                    mc_array = np.array(mc_results)
+                    ax.plot(np.percentile(mc_array, 95, axis=0), color='green', label='95th Percentile', linewidth=2)
+                    ax.plot(np.percentile(mc_array, 5, axis=0), color='red', label='5th Percentile (Worst Case)', linewidth=2)
+                    ax.plot(np.mean(mc_array, axis=0), color='blue', label='Average Path', linestyle='--')
+                    
+                    ax.set_title(f"Monte Carlo: {n_simulations} Shuffled Equity Paths")
+                    ax.set_ylabel("Account Balance ($)")
+                    ax.set_xlabel("Trade Number")
+                    ax.legend()
+                    st.pyplot(fig)
+
+                    # Risk Metrics
+                    final_balances = mc_array[:, -1]
+                    ruin_count = np.sum(final_balances < initial_cash)
+                    
+                    m_col1, m_col2, m_col3 = st.columns(3)
+                    m_col1.metric("Prob. of Profit", f"{(1 - ruin_count/n_simulations)*100:.1f}%")
+                    m_col2.metric("Median Final Equity", f"${np.median(final_balances):,.0f}")
+                    m_col3.metric("Max MC Drawdown", f"${(np.max(mc_array) - np.min(mc_array)):,.0f}")
+                else:
+                    st.warning("Not enough trades to run a reliable Monte Carlo simulation.")
+
+                # C. Trade Log (Sanitized & Limited)
+                trades = stats['_trades'].copy()
+                
+                # Fix Duration formatting
+                if 'Duration' in trades.columns:
+                    trades['Duration'] = trades['Duration'].astype(str)
+                
+                # Limit to last 2000 trades to prevent "Out of Memory"
+                if len(trades) > 2000:
+                    st.warning(f"⚠️ Showing last 2,000 trades (Total: {len(trades)}) to save memory.")
+                    trades = trades.iloc[-2000:]
+                    
+                with st.expander("📝 View Trade Log"):
+                    st.dataframe(trades.astype(str), use_container_width=True)
 
         except Exception as e:
             st.error(f"Error: {e}")
