@@ -14,6 +14,12 @@ class EightAMStrategy(BaseStrategy):
     3. Wait for Market Structure Shift (MSS) on 1m chart.
     4. Enter targeting the opposing liquidity.
     """
+
+    # --- FIX: ADD THESE LINES FOR BACKTESTING.PY ---
+    risk_reward = 2.0
+    stop_loss_padding = 2.0
+    swing_lookback = 5
+    # -----------------------------------------------
     
     class Config(BaseModel):
         risk_reward: float = 2.0
