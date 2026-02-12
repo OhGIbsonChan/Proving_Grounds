@@ -8,6 +8,8 @@ LEVERAGE = 1.0 / 20.0       # 1:20 Leverage (Margin = 0.05)
 # TradingView uses a "Flat Fee". Backtesting.py uses %.
 # $1.25 fee on a ~$30k contract value is roughly 0.00004
 COMMISSION = 0.00004         # NQ/MNQ fees are usually around $0.60 per side per contract (adjust as needed)
+SLIPPAGE = 0.00010    # Added friction (approx. 1 tick on NQ/MNQ)
+TOTAL_FRICTION = COMMISSION + SLIPPAGE
 
 # --- DATA SETTINGS ---
 DATA_PATH = "data/mnq_clean.parquet" # Ensure we load the parquet now

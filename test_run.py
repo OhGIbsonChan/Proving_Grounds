@@ -17,6 +17,7 @@ bt = Backtest(
     cash=config.INITIAL_CASH, 
     commission=config.COMMISSION, 
     margin=config.LEVERAGE
+    trade_on_close=False # Forces entry on the NEXT candle's open
 )
 
 # 3. Run

@@ -131,6 +131,8 @@ SelectedStrategy = STRAT_MAP[selected_strat_name]
 initial_cash = st.sidebar.number_input("Starting Cash ($)", value=100000)
 leverage = st.sidebar.slider("Leverage", 1, 50, 20)
 comm = st.sidebar.number_input("Comm ($)", value=1.25) / 30000 
+# NEW: Slippage Input (as a percentage of price)
+slippage_pct = st.sidebar.number_input("Slippage (%)", value=0.01, step=0.01) / 100
 
 params = {}
 if hasattr(SelectedStrategy, 'risk_reward'): params["risk_reward"] = st.sidebar.number_input("Risk/Reward", value=float(SelectedStrategy.risk_reward))
@@ -143,7 +145,7 @@ if st.button("🚀 Run Backtest"):
             timeframe = "1min" if "ICT" in selected_strat_name or "Golden" in selected_strat_name else "5min"
             df = load_data(config.DATA_PATH, timeframe=timeframe)
             
-            bt = Backtest(df, SelectedStrategy, cash=initial_cash, commission=comm, margin=1/leverage)
+            bt = Backtest(df, SelectedStrategy, cash=initial_cash, commission=comm, margin=1/leverage, trade_on_close=False)
             stats = bt.run(**params)
             
             # --- Generate Assets ---
