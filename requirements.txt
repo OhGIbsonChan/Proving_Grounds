@@ -1,7 +1,6 @@
 streamlit
 backtesting
 pandas
-pandas_ta
-yfinance
+pandas-ta-classic
 pydantic
 plotly
