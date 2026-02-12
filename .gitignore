@@ -1,0 +1,18 @@
+# Ignore the data folder and all its contents
+/data/
+
+# Alternatively, if you only want to ignore CSVs inside that folder:
+# /data/*.csv
+
+# Ignore local environment variables (important for security)
+.env
+
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+# Ignore large dependency folders
+node_modules/
+
+# Ignore reports
+report.html

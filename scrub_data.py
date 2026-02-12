@@ -12,17 +12,15 @@ def scrub_data():
     # MNQ has never been below 1,000 since 2019. 
     # Anything below 1,000 is a data error (likely 0 or 1e-9).
     print("   Scanning for zero/low price spikes...")
-    df = df[df['Low'] > 1000]
+    df = df[df['Low'] > 1000] # MNQ hasn't been < 1000 in decades. Safe.
     
-    # --- 2. REMOVE IMPOSSIBLE VOLATILITY ---
-    # A 5-minute candle should not range 500 points (unless it's a flash crash).
-    # This filters out "High: 24000, Low: 15000" type errors.
-    print("   Scanning for impossible volatility...")
-    df['Range'] = df['High'] - df['Low']
-    df = df[df['Range'] < 500] 
+    # --- 2. REMOVE IMPOSSIBLE VOLATILITY (DISABLED) ---
+    # We commented this out to allow flash crashes/high vol events
+    # df['Range'] = df['High'] - df['Low']
+    # df = df[df['Range'] < 500] 
     
-    # Drop the temporary column
-    df.drop(columns=['Range'], inplace=True)
+    # Drop the temporary column <--- COMMENT THIS OUT TOO
+    # df.drop(columns=['Range'], inplace=True)
     
     removed_count = original_count - len(df)
     print(f"✨ Cleaning Complete!")
