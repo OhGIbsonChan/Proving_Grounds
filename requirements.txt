@@ -1,0 +1,7 @@
+streamlit
+backtesting
+pandas
+pandas_ta
+yfinance
+pydantic
+plotly
