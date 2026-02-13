@@ -209,10 +209,24 @@ if hasattr(SelectedStrategy, 'Config'):
         elif isinstance(default_val, bool):
             params[name] = st.sidebar.checkbox(f"{title}", value=default_val)
 
-    # Place this ABOVE the "Run Backtest" button
-    df_preview_len = len(load_data(config.DATA_PATH, timeframe=selected_tf))
-    est_seconds = (df_preview_len / 500000) * 10  # Approx 10s per 500k rows
-    st.info(f"📊 Dataset Size: {df_preview_len:,.0f} candles. Estimated Run Time: ~{est_seconds:.0f} seconds.")
+    # --- SMART TIME ESTIMATOR ---
+    # 1. Load full data ONLY if we haven't already (Streamlit caches this)
+    full_df = load_data(config.DATA_PATH, timeframe=selected_tf)
+    
+    # 2. Filter by the dates user selected to get TRUE count
+    tz = "America/New_York"
+    # Convert inputs to Timestamps (matching the dataframe index timezone)
+    # Note: We assume the DF is loaded with a timezone, usually UTC or NY. 
+    # If the logic inside load_data is complex, we just do a rough estimate using dates.
+    
+    mask = (full_df.index.date >= start_date) & (full_df.index.date <= end_date)
+    filtered_len = len(full_df[mask])
+    
+    # 3. Calculate Estimate (10s per 500k rows is a rough baseline for Python backtesting)
+    est_seconds = (filtered_len / 500000) * 10 
+    if est_seconds < 1: est_seconds = 1
+    
+    st.info(f"📊 Selected Data: {filtered_len:,.0f} candles. Estimated Run Time: ~{est_seconds:.0f} seconds.")
 
     if st.button("🚀 Run Backtest"):
         # Create a progress placeholder
