@@ -22,4 +22,4 @@ DEFAULT_TRADE_SIZE = 1
 # --- POSITION SIZING ---
 # CRITICAL: We want to trade 1 Contract, not "95% of Account".
 # In Backtesting.py, if size is > 1, it treats it as UNITS (Contracts).
-FIXED_SIZE = 10
+FIXED_SIZE = 1

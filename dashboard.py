@@ -12,10 +12,14 @@ from backtesting import Backtest, Strategy
 import config
 from lib.data_loader import load_data
 from strategies.base import BaseStrategy
+import json
+import os
+from strategies.builder import UniversalStrategy, StrategyRecipe
 
 # --- HELPER: AUTO-DISCOVER STRATEGIES ---
 def get_strategies():
     strategies = {}
+    # 1. Load Python Class Strategies (Existing logic)
     package_name = 'strategies'
     if package_name not in sys.modules:
         import strategies
@@ -30,6 +34,28 @@ def get_strategies():
                     strategies[member_name] = member_obj
         except Exception:
             pass
+
+    # 2. Load JSON Strategies (NEW)
+    if os.path.exists("saved_strategies"):
+        for filename in os.listdir("saved_strategies"):
+            if filename.endswith(".json"):
+                name = filename.replace(".json", "")
+                
+                # We create a "proxy" class that Backtesting.py can use
+                # This effectively clones the UniversalStrategy class
+                class CustomStrat(UniversalStrategy):
+                    pass
+                
+                # Load the JSON recipe
+                with open(f"saved_strategies/{filename}", "r") as f:
+                    data = json.load(f)
+                    recipe = StrategyRecipe(**data)
+                
+                # Inject the recipe into the class
+                CustomStrat.recipe = recipe
+                
+                # Add to the dictionary with a special prefix
+                strategies[f"Custom: {name}"] = CustomStrat
     return strategies
 
 # --- HELPER: GENERATE EQUITY CURVE IMAGE ---
