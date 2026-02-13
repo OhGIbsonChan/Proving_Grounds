@@ -3,128 +3,173 @@ import numpy as np
 from backtesting import Strategy
 from pydantic import BaseModel
 from .base import BaseStrategy
-from lib.smc import FVGManager, get_po3_phase
+from lib.smc import FVGManager, get_po3_phase, get_swing_points, detect_mss
 import config
 
 class IFVGStrategy(BaseStrategy):
     """
-    Inversion FVG Strategy (Modular Version).
-    1. Uses FVGManager to track zones.
-    2. Uses PO3 Filter (Optional).
-    3. Entries on 'Wick' retest of Inverted Zones.
+    Inversion FVG Strategy (Front-Runner + Aggressive Mode).
+    1. Limit Orders: Enters BEFORE the zone to ensure fills.
+    2. Auto-Cancel: Kills old orders.
+    3. Aggressive Mode: Doubles padding to force trades.
     """
     
-    # --- CLASS VARS FOR BACKTESTING ---
+    # --- CLASS VARS ---
     risk_reward = 2.0
-    stop_loss_padding = 2.0
-    fvg_expiration = 120
-    use_po3_filter = True  # New switch
+    stop_loss_padding = 1.0 
+    fvg_expiration = 60      
+    trade_size = 1
+    
+    # Filters
+    use_mss_filter = True    
+    use_ema_filter = True
+    ema_period = 200
+    use_po3_filter = True
+    
+    # Front-Running
+    limit_padding_atr = 0.1
+    order_expiration = 60
+    
+    # NEW: Aggressive Mode (Forces trades)
+    aggressive_mode = False 
     
     class Config(BaseModel):
         risk_reward: float = 2.0
-        stop_loss_padding: float = 2.0 
-        fvg_expiration: int = 120
+        stop_loss_padding: float = 1.0 
+        fvg_expiration: int = 60
+        trade_size: int = 1
+        
+        use_mss_filter: bool = True
+        use_ema_filter: bool = True
+        ema_period: int = 200
         use_po3_filter: bool = True
+        
+        limit_padding_atr: float = 0.1
+        order_expiration: int = 60
+        aggressive_mode: bool = False # Check this if you get 0 trades
 
     def init(self):
-        # 1. Initialize the Brain
         self.fvg_engine = FVGManager(expiration=self.cfg.fvg_expiration)
-        self.trade_size = config.FIXED_SIZE
-        # 2. Add ATR for smart Stop Losses (14 period)
+        self.trade_size = self.cfg.trade_size
+        
+        # INDICATORS
         self.atr = self.I(lambda: self.data.df.ta.atr(length=14), name="ATR")
+        self.ema = self.I(lambda: self.data.df.ta.ema(length=self.cfg.ema_period), name="Trend_EMA")
+        
+        # STRUCTURE
+        highs = pd.Series(self.data.High)
+        lows = pd.Series(self.data.Low)
+        self.swings_h, self.swings_l = self.I(get_swing_points, highs, lows, 5, 5)
+        self.mss = self.I(detect_mss, pd.Series(self.data.Close), pd.Series(self.swings_h), pd.Series(self.swings_l))
+        
+        self.order_times = {}
 
     def next(self):
-        # --- FIX: WAIT FOR ENOUGH DATA ---
-        # We need at least 3 bars to define an FVG (Candle 1, 2, 3)
-        # If we are on bar 0, 1, or 2, we skip.
-        if len(self.data) < 3:
-            return
-        # 1. DATA SLICING (Required because lib/smc.py uses .iloc)
-        # We pass the data up to the current candle
+        # 1. CLEANUP STALE ORDERS
+        current_idx = len(self.data)
+        
+        for order in list(self.orders):
+            if order in self.order_times:
+                age = current_idx - self.order_times[order]
+                # If Aggressive, keep orders longer (120 bars)
+                limit = self.cfg.order_expiration * 2 if self.cfg.aggressive_mode else self.cfg.order_expiration
+                if age > limit:
+                    order.cancel()
+                    del self.order_times[order]
+            else:
+                self.order_times[order] = current_idx
+
+        # 2. WAIT FOR DATA
+        if len(self.data) < 200: return
+
+        # 3. UPDATE ENGINE
         idx = len(self.data)
-        # Note: self.data.df gives us the full dataframe, we slice up to 'now'
-        # This is safe because 'idx' corresponds to the current simulation step
         high_s = self.data.df['High'].iloc[:idx]
         low_s = self.data.df['Low'].iloc[:idx]
         close_s = self.data.df['Close'].iloc[:idx]
         
-        current_time = self.data.index[-1]
+        raw_time = self.data.index[-1]
+        if raw_time.tzinfo is None:
+            ny_time = raw_time.tz_localize('UTC').tz_convert('America/New_York')
+        else:
+            ny_time = raw_time.tz_convert('America/New_York')
         
-        # 2. UPDATE THE ENGINE
-        self.fvg_engine.update(high_s, low_s, close_s, idx-1, current_time)
+        self.fvg_engine.update(high_s, low_s, close_s, idx-1, ny_time)
         
-        # 3. PO3 FILTER (Optional)
-        # "Distribution" is usually the best phase for IFVG reversals/continuations
-        if self.cfg.use_po3_filter:
-            phase = get_po3_phase(current_time)
-            # If we are NOT in Distribution (NY Session), skip.
-            # You can adjust this to include "Manipulation" (London) if you want.
+        # 4. ENTRY LOGIC
+        if self.position or len(self.orders) > 0: return
+        
+        current_price = self.data.Close[-1]
+        trend_ema = self.ema[-1]
+        current_atr = self.atr[-1]
+        current_mss = self.mss[-1]
+        
+        if np.isnan(current_atr) or np.isnan(trend_ema): return
+
+        # SESSION FILTER (Skip if Aggressive)
+        if self.cfg.use_po3_filter and not self.cfg.aggressive_mode:
+            phase = get_po3_phase(ny_time)
             if phase != "Distribution":
                 return
 
-        # 4. ENTRY LOGIC
-        if self.position: return
-        
-        # Iterate through INVERTED zones only
         for ifvg in self.fvg_engine.inverted_fvgs:
+            if ifvg.traded: continue
             
-            # A. SHORT SETUP (Bearish IFVG)
-            # Logic: It was Bullish (Support) -> Broke -> Now Resistance
+            # A. SHORT SETUP
             if ifvg.is_bullish and ifvg.inverted:
-                # 1. Did we poke up into it?
-                poked = self.data.High[-1] > ifvg.bottom
-                # 2. Did we reject it? (Close < Top)
-                rejected = self.data.Close[-1] < ifvg.top
-                # 3. Edwin's "Wick" rule: Close should be in the lower half or below
-                valid_close = self.data.Close[-1] < ifvg.mid
+                # Filters (Skip if Aggressive)
+                if not self.cfg.aggressive_mode:
+                    if self.cfg.use_ema_filter and current_price > trend_ema: continue
+                    if self.cfg.use_mss_filter and current_mss == 1: continue
                 
-                if poked and rejected and valid_close:
-                    self.entry_short(ifvg)
-                    return
+                self.entry_short_limit(ifvg)
+                return
 
-            # B. LONG SETUP (Bullish IFVG)
-            # Logic: It was Bearish (Resistance) -> Broke -> Now Support
+            # B. LONG SETUP
             if not ifvg.is_bullish and ifvg.inverted:
-                # 1. Did we poke down into it?
-                poked = self.data.Low[-1] < ifvg.top
-                # 2. Did we reject it? (Close > Bottom)
-                rejected = self.data.Close[-1] > ifvg.bottom
-                # 3. Wick rule: Close should be in the upper half or above
-                valid_close = self.data.Close[-1] > ifvg.mid
-                
-                if poked and rejected and valid_close:
-                    self.entry_long(ifvg)
-                    return
+                # Filters
+                if not self.cfg.aggressive_mode:
+                    if self.cfg.use_ema_filter and current_price < trend_ema: continue
+                    if self.cfg.use_mss_filter and current_mss == -1: continue
 
-    def entry_short(self, zone):
-        # FIX: Use ATR for padding instead of fixed 2.0
-        # If ATR is 20 points, we give it 20 points of room, not 2.
+                self.entry_long_limit(ifvg)
+                return
+
+    def entry_short_limit(self, zone):
         current_atr = self.atr[-1]
         
-        # Stop Loss = Top of Zone + 1x ATR (Safe)
+        # If Aggressive, double the padding (enter earlier)
+        mult = 2.0 if self.cfg.aggressive_mode else 1.0
+        padding = current_atr * self.cfg.limit_padding_atr * mult
+        
+        entry_price = zone.bottom - padding
+        
         sl = zone.top + current_atr
+        risk = sl - entry_price
         
-        risk = sl - self.data.Close[-1]
-        
-        # FILTER: If the zone is too tight, don't take it (Commission saver)
-        if risk < (current_atr * 0.5): 
-            return
-        
-        tp = self.data.Close[-1] - (risk * self.cfg.risk_reward)
-        self.sell(sl=sl, tp=tp, size=self.trade_size)
+        if risk < (current_atr * 0.2): return
 
-    def entry_long(self, zone):
-        # FIX: Use ATR for padding
+        tp = entry_price - (risk * self.cfg.risk_reward)
+        
+        order = self.sell(limit=entry_price, sl=sl, tp=tp, size=self.trade_size)
+        self.order_times[order] = len(self.data)
+        zone.traded = True
+
+    def entry_long_limit(self, zone):
         current_atr = self.atr[-1]
         
-        # Stop Loss = Bottom of Zone - 1x ATR
+        mult = 2.0 if self.cfg.aggressive_mode else 1.0
+        padding = current_atr * self.cfg.limit_padding_atr * mult
+        
+        entry_price = zone.top + padding
+        
         sl = zone.bottom - current_atr
+        risk = entry_price - sl
         
-        risk = self.data.Close[-1] - sl
-        
-        # FILTER: Minimum risk required
-        if risk < (current_atr * 0.5):
-            return
+        if risk < (current_atr * 0.2): return
 
-        tp = self.data.Close[-1] + (risk * self.cfg.risk_reward)
-        self.buy(sl=sl, tp=tp, size=self.trade_size)
+        tp = entry_price + (risk * self.cfg.risk_reward)
+        
+        order = self.buy(limit=entry_price, sl=sl, tp=tp, size=self.trade_size)
+        self.order_times[order] = len(self.data)
+        zone.traded = True

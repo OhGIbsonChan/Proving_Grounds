@@ -209,24 +209,46 @@ if hasattr(SelectedStrategy, 'Config'):
         elif isinstance(default_val, bool):
             params[name] = st.sidebar.checkbox(f"{title}", value=default_val)
 
-if st.button("🚀 Run Backtest"):
-    with st.spinner("Crunching..."):
-        try:
-            # 1. Load data
-            df = load_data(config.DATA_PATH, timeframe=selected_tf)
+    # Place this ABOVE the "Run Backtest" button
+    df_preview_len = len(load_data(config.DATA_PATH, timeframe=selected_tf))
+    est_seconds = (df_preview_len / 500000) * 10  # Approx 10s per 500k rows
+    st.info(f"📊 Dataset Size: {df_preview_len:,.0f} candles. Estimated Run Time: ~{est_seconds:.0f} seconds.")
 
-            # 2. Fix Timezone Mismatch for Slicing
-            # Convert date objects to localized timestamps to match df.index
+    if st.button("🚀 Run Backtest"):
+        # Create a progress placeholder
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        try:
+            # STEP 1: LOAD DATA
+            status_text.text("📂 Loading Data...")
+            progress_bar.progress(10)
+            df = load_data(config.DATA_PATH, timeframe=selected_tf)
+            
+            # STEP 2: PREPARE TIMEZONES
+            status_text.text("🌍 Aligning Timezones...")
+            progress_bar.progress(30)
+            
             tz = "America/New_York"
             start_ts = pd.Timestamp(start_date).tz_localize(tz)
             end_ts = pd.Timestamp(end_date).tz_localize(tz).replace(hour=23, minute=59, second=59)
             
+            # Handle timezone naive/aware mismatch if needed
+            if df.index.tz is None:
+                df.index = df.index.tz_localize('UTC').tz_convert(tz)
+            else:
+                df.index = df.index.tz_convert(tz)
+                
             df = df.loc[start_ts:end_ts]
             
             if df.empty:
                 st.error("No data available for the selected date range.")
+                progress_bar.empty()
             else:
-                # 3. Initialize and RUN inside the 'else' block
+                # STEP 3: INITIALIZE BACKTEST
+                status_text.text("⚙️ Initializing Engine...")
+                progress_bar.progress(50)
+                
                 bt = Backtest(
                     df, 
                     SelectedStrategy, 
@@ -236,9 +258,17 @@ if st.button("🚀 Run Backtest"):
                     trade_on_close=False
                 )
                 
+                # STEP 4: RUN SIMULATION
+                status_text.text("🏃 Running Simulation... (This may take a moment)")
+                progress_bar.progress(70)
+                
                 stats = bt.run(**params)
-            
+                
+                progress_bar.progress(100)
+                status_text.text("✅ Complete!")
+                
                 # --- Generate Assets ---
+                # ... (Rest of your existing code below this line remains the same) ...
                 grade, color = calculate_grade(stats)
                 equity_curve = stats['_equity_curve']['Equity']
                 
