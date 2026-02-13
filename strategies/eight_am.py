@@ -15,16 +15,24 @@ class EightAMStrategy(BaseStrategy):
     4. Enter targeting the opposing liquidity.
     """
 
-    # --- FIX: ADD THESE LINES FOR BACKTESTING.PY ---
+    # --- REQUIRED FOR BACKTESTING.PY ---
+    # These must exist here for the engine to "see" them
     risk_reward = 2.0
     stop_loss_padding = 2.0
-    swing_lookback = 5
-    # -----------------------------------------------
+    
+    # OLD: swing_lookback = 5  <-- DELETE THIS
+    
+    # NEW: Define the split lookbacks here
+    swing_lookback_left = 10 
+    swing_lookback_right = 2
+    # -----------------------------------
     
     class Config(BaseModel):
         risk_reward: float = 2.0
         stop_loss_padding: float = 2.0 # Points
-        swing_lookback: int = 5        # For MSS detection
+        # Update Config to match
+        swing_lookback_left: int = 10
+        swing_lookback_right: int = 2
 
     def init(self):
         # --- 1. PRE-CALCULATE 8 AM RANGES ---
@@ -54,13 +62,13 @@ class EightAMStrategy(BaseStrategy):
         self.range_high = self.I(lambda: df['RangeHigh'], name='8am_High')
         self.range_low = self.I(lambda: df['RangeLow'], name='8am_Low')
         
-        # --- 2. CALCULATE SWING POINTS (For MSS) ---
+        # --- 2. CALCULATE SWING POINTS ---
         self.swings_h, self.swings_l = self.I(
             get_swing_points, 
             pd.Series(self.data.High), 
             pd.Series(self.data.Low), 
-            self.cfg.swing_lookback, 
-            self.cfg.swing_lookback,
+            self.swing_lookback_left,  # Use self.var directly or self.cfg.var
+            self.swing_lookback_right, 
             overlay=True
         )
         

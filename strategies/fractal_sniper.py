@@ -2,6 +2,7 @@ from strategies.base import BaseStrategy
 from lib.indicators import get_rolling_hurst, get_ker, get_atr
 from pydantic import BaseModel, Field
 import pandas_ta_classic as ta
+import config
 
 class FractalSniperV4(BaseStrategy):
     # --- 1. PARAMETERS (Must be Class Variables for Backtesting.py) ---
@@ -83,11 +84,11 @@ class FractalSniperV4(BaseStrategy):
             if is_fractal and is_efficient and is_volume:
                 if price > self.ema[-1]:
                     # Reduced size to 0.5 (50% of equity) to survive longer
-                    self.buy(size=0.5) 
+                    self.buy(size=config.FIXED_SIZE) 
                     self.stop_loss_price = price - (self.atr[-1] * self.stop_atr)
                     self.highest_high = price 
 
                 elif price < self.ema[-1]:
-                    self.sell(size=0.5)
+                    self.sell(size=config.FIXED_SIZE)
                     self.stop_loss_price = price + (self.atr[-1] * self.stop_atr)
                     self.lowest_low = price

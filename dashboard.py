@@ -163,9 +163,25 @@ end_date = col_end.date_input(
 )
 
 params = {}
-if hasattr(SelectedStrategy, 'risk_reward'): params["risk_reward"] = st.sidebar.number_input("Risk/Reward", value=float(SelectedStrategy.risk_reward))
-if hasattr(SelectedStrategy, 'stop_loss_padding'): params["stop_loss_padding"] = st.sidebar.number_input("SL Padding", value=float(SelectedStrategy.stop_loss_padding))
-if hasattr(SelectedStrategy, 'swing_lookback'): params["swing_lookback"] = st.sidebar.slider("Lookback", 2, 20, int(SelectedStrategy.swing_lookback))
+# Check if the strategy has a Config class (Pydantic model)
+if hasattr(SelectedStrategy, 'Config'):
+    st.sidebar.markdown("### ⚙️ Strategy Parameters")
+    
+    # Support Pydantic V1 and V2
+    fields = getattr(SelectedStrategy.Config, 'model_fields', {}) or getattr(SelectedStrategy.Config, '__fields__', {})
+    
+    for name, field in fields.items():
+        # Get metadata (Default value, Title, Limits)
+        default_val = field.default
+        title = field.title if hasattr(field, 'title') and field.title else name
+        
+        # Render appropriate input widget
+        if isinstance(default_val, float):
+            params[name] = st.sidebar.number_input(f"{title}", value=float(default_val))
+        elif isinstance(default_val, int):
+            params[name] = st.sidebar.number_input(f"{title}", value=int(default_val), step=1)
+        elif isinstance(default_val, bool):
+            params[name] = st.sidebar.checkbox(f"{title}", value=default_val)
 
 if st.button("🚀 Run Backtest"):
     with st.spinner("Crunching..."):

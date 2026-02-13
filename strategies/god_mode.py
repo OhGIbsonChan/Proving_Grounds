@@ -2,6 +2,7 @@ from strategies.base import BaseStrategy
 from pydantic import BaseModel, Field
 import pandas_ta_classic as ta
 import pytz 
+import config # Add import
 
 class Config(BaseModel):
     # The "God Mode" Settings
@@ -87,7 +88,7 @@ class GodModeSniper(BaseStrategy):
                             
                             # SAFETY: Ensure positive prices
                             if sl_price > 0:
-                                self.buy(sl=sl_price, tp=tp_price, size=1)
+                                self.buy(sl=sl_price, tp=tp_price, size=config.FIXED_SIZE)
 
                         # Short Entry
                         elif trig_l < 999999 and price < trig_l:
@@ -99,7 +100,7 @@ class GodModeSniper(BaseStrategy):
                             
                             # SAFETY: Ensure positive prices (Fixes the crash!)
                             if tp_price > 0: 
-                                self.sell(sl=sl_price, tp=tp_price, size=1)
+                                self.sell(sl=sl_price, tp=tp_price, size=config.FIXED_SIZE)
 
         # --- 5. HARD EXIT ---
         if self.position and hour == 15 and minute >= 45:
